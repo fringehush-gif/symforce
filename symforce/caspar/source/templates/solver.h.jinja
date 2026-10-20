@@ -244,8 +244,7 @@ class {{ solver.struct_name }} {
   void DoUpdateR();
   {{solver.linear_t}} DoRetractScore();
   void DoBeta();
-  void DoUpdateP();
-  void DoUpdateMp();
+  void DoUpdatePMp();
   {{solver.linear_t}} GetPredDecrease();
 
   {% for name, datadesc in solver.fields.items() %}

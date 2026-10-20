@@ -12,8 +12,7 @@
 #include "kernel_Matrix21_retract.h"
 #include "kernel_Matrix21_start_w.h"
 #include "kernel_Matrix21_start_w_contribute.h"
-#include "kernel_Matrix21_update_Mp.h"
-#include "kernel_Matrix21_update_p.h"
+#include "kernel_Matrix21_update_p_Mp.h"
 #include "kernel_Matrix21_update_r.h"
 #include "kernel_Matrix21_update_r_first.h"
 #include "kernel_Matrix21_update_step.h"
@@ -194,8 +193,7 @@ SolveResult GraphSolver::solve(bool print_progress, bool verbose_logging) {
         DoUpdateRFirst();
       } else {
         DoBeta();
-        DoUpdateP();
-        DoUpdateMp();
+        DoUpdatePMp();
         DoJtjpDirect();
         DoAlpha();
         DoUpdateStep();
@@ -330,12 +328,6 @@ void GraphSolver::DoNormalize() {
                     Matrix21_num_, Matrix21_num_);
 }
 
-void GraphSolver::DoUpdateMp() {
-  Matrix21UpdateMp(nodes__Matrix21__r_k_, Matrix21_num_, nodes__Matrix21__Mp_, Matrix21_num_,
-                   solver__beta_, nodes__Matrix21__Mp_, Matrix21_num_, nodes__Matrix21__w_,
-                   Matrix21_num_, Matrix21_num_);
-}
-
 void GraphSolver::DoJtjpDirect() {}
 
 void GraphSolver::DoAlphaFirst() {
@@ -404,9 +396,11 @@ void GraphSolver::DoBeta() {
   BetaFromNumDenom(solver__beta_numerator_, solver__alpha_numerator_, solver__beta_);
 }
 
-void GraphSolver::DoUpdateP() {
-  Matrix21UpdateP(nodes__Matrix21__z_, Matrix21_num_, nodes__Matrix21__p_, Matrix21_num_,
-                  solver__beta_, nodes__Matrix21__p_, Matrix21_num_, Matrix21_num_);
+void GraphSolver::DoUpdatePMp() {
+  Matrix21UpdatePMp(nodes__Matrix21__z_, Matrix21_num_, nodes__Matrix21__p_, Matrix21_num_,
+                    nodes__Matrix21__r_k_, Matrix21_num_, nodes__Matrix21__Mp_, Matrix21_num_,
+                    solver__beta_, nodes__Matrix21__p_, Matrix21_num_, nodes__Matrix21__Mp_,
+                    Matrix21_num_, nodes__Matrix21__w_, Matrix21_num_, Matrix21_num_);
 }
 
 double GraphSolver::GetPredDecrease() {

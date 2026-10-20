@@ -619,26 +619,18 @@ class Solver:
                 ],
             )
             self.add_kernel(
-                (name, "update_p"),
+                (name, "update_p_Mp"),
                 [
                     ReadSequential(f"{name}_z", z, **akws),
                     ReadSequential(f"{name}_p_k", p_k, **akws),
+                    ReadSequential(f"{name}_r_k", r_k, **akws),
+                    ReadSequential(f"{name}_Mp", mp, **akws),
                     ReadUnique("beta", beta, **akws),
                 ],
                 [
                     WriteSequential(
                         f"out_{name}_p_kp1", z + p_k * beta, after=f"{name}_p_k", **akws
                     ),
-                ],
-            )
-            self.add_kernel(
-                (name, "update_Mp"),
-                [
-                    ReadSequential(f"{name}_r_k", r_k, **akws),
-                    ReadSequential(f"{name}_Mp", mp, **akws),
-                    ReadUnique("beta", beta, **akws),
-                ],
-                [
                     WriteSequential(
                         f"out_{name}_Mp_kp1", r_k + mp * beta, after=f"{name}_Mp", **akws
                     ),

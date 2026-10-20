@@ -31,8 +31,7 @@
 #include "kernel_{{nodetype.__name__}}_update_r_first.h"
 #include "kernel_{{nodetype.__name__}}_update_step_first.h"
 #include "kernel_{{nodetype.__name__}}_update_step.h"
-#include "kernel_{{nodetype.__name__}}_update_p.h"
-#include "kernel_{{nodetype.__name__}}_update_Mp.h"
+#include "kernel_{{nodetype.__name__}}_update_p_Mp.h"
 {% if nodetype in solver.tridig_Uk_syms %}
 #include "kernel_{{nodetype.__name__}}_tridig_make_eq.h"
 #include "kernel_{{nodetype.__name__}}_cyclic_reduction_solve_two.h"
@@ -167,8 +166,7 @@ SolveResult {{ solver.struct_name }}::solve(bool print_progress, bool verbose_lo
         DoUpdateRFirst();
       } else {
         DoBeta();
-        DoUpdateP();
-        DoUpdateMp();
+        DoUpdatePMp();
         DoJtjpDirect();
         DoAlpha();
         DoUpdateStep();
@@ -416,19 +414,6 @@ void {{ solver.struct_name }}::DoNormalize() {
     {% endfor%}
 }
 
-void {{ solver.struct_name }}::DoUpdateMp() {
-    {% for nodetype in solver.node_types %}
-    {{nodetype.__name__}}UpdateMp(
-        {{node_key(nodetype, "r_k")}}, {{num_key(nodetype)}},
-        {{node_key(nodetype, "Mp")}}, {{num_key(nodetype)}},
-        {{solver_key("beta")}},
-        {{node_key(nodetype, "Mp")}}, {{num_key(nodetype)}},
-        {{node_key(nodetype, "w")}}, {{num_key(nodetype)}},
-        {{num_key(nodetype)}}
-    );
-    {% endfor %}
-}
-
 void {{ solver.struct_name }}::DoJtjpDirect() {
     {% for fac in solver.factors %}
     {% if not fac.solved_by_preconditioner %}
@@ -613,13 +598,17 @@ void {{ solver.struct_name }}::DoBeta() {
     BetaFromNumDenom({{solver_key("beta_numerator")}}, {{solver_key("alpha_numerator")}}, {{solver_key("beta")}});
 }
 
-void {{ solver.struct_name }}::DoUpdateP() {
+void {{ solver.struct_name }}::DoUpdatePMp() {
     {% for nodetype in solver.node_types %}
-    {{nodetype.__name__}}UpdateP(
+    {{nodetype.__name__}}UpdatePMp(
         {{node_key(nodetype, "z")}}, {{num_key(nodetype)}},
         {{node_key(nodetype, "p")}}, {{num_key(nodetype)}},
+        {{node_key(nodetype, "r_k")}}, {{num_key(nodetype)}},
+        {{node_key(nodetype, "Mp")}}, {{num_key(nodetype)}},
         {{solver_key("beta")}},
         {{node_key(nodetype, "p")}}, {{num_key(nodetype)}},
+        {{node_key(nodetype, "Mp")}}, {{num_key(nodetype)}},
+        {{node_key(nodetype, "w")}}, {{num_key(nodetype)}},
         {{num_key(nodetype)}}
     );
     {% endfor %}

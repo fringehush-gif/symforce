@@ -170,8 +170,7 @@ class GraphSolver {
   void DoUpdateR();
   double DoRetractScore();
   void DoBeta();
-  void DoUpdateP();
-  void DoUpdateMp();
+  void DoUpdatePMp();
   double GetPredDecrease();
 
   double* marker__start_;
