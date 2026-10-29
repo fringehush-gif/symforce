@@ -59,15 +59,7 @@ GraphSolver::GraphSolver(const SolverParams<double>& params, size_t Matrix21_num
       rosenbrock_num_(rosenbrock_num_max),
       rosenbrock_num_max_(rosenbrock_num_max) {
   indices_valid_ = false;
-  if (params.pcg_rel_error_exit <= 0.0f) {
-    throw std::runtime_error("params.pcg_rel_error_exit must be positive");
-  }
-  if (params.diag_init < 0.0f) {
-    throw std::runtime_error("params.diag_init must be positive");
-  }
-  if (params.pcg_iter_max < 1) {
-    throw std::runtime_error("params.pcg_iter_max must be at least 1");
-  }
+  set_params(params);
   allocation_size_ = get_nbytes();
 
   if (device_id_ < 0) {
@@ -148,6 +140,15 @@ GraphSolver::~GraphSolver() {
 }
 
 void GraphSolver::set_params(const SolverParams<double>& params) {
+  if (params.pcg_rel_error_exit <= 0.0f) {
+    throw std::runtime_error("params.pcg_rel_error_exit must be positive");
+  }
+  if (params.diag_init < 0.0f) {
+    throw std::runtime_error("params.diag_init must be positive");
+  }
+  if (params.pcg_iter_max < 1) {
+    throw std::runtime_error("params.pcg_iter_max must be at least 1");
+  }
   this->params_ = params;
 }
 

@@ -5,6 +5,7 @@
 
 #include <cmath>
 #include <cstddef>
+#include <stdexcept>
 #include <vector>
 
 #include <catch2/catch_approx.hpp>
@@ -130,4 +131,28 @@ TEST_CASE("A solver with no inner iterations is rejected", "[caspar_solver_cuda_
   params.pcg_iter_max = 0;
 
   CHECK_THROWS(caspar::GraphSolver(params, kNumNodes, kNumNodes));
+}
+
+TEST_CASE("Invalid post-construction solver parameters are rejected",
+          "[caspar_solver_cuda_test]") {
+  REQUIRE(HaveDevice());
+  caspar::SolverParams<double> params = ParamsWithIterations(8);
+  caspar::GraphSolver solver(params, kNumNodes, kNumNodes);
+  for (const int invalid : {0, -1}) {
+    params.pcg_iter_max = invalid;
+    CHECK_THROWS_AS(solver.set_params(params), std::runtime_error);
+  }
+  params = ParamsWithIterations(8);
+  params.pcg_rel_error_exit = 0;
+  CHECK_THROWS_AS(solver.set_params(params), std::runtime_error);
+  params = ParamsWithIterations(8);
+  params.pcg_rel_error_exit = -1;
+  CHECK_THROWS_AS(solver.set_params(params), std::runtime_error);
+  params = ParamsWithIterations(8);
+  params.diag_init = -1;
+  CHECK_THROWS_AS(solver.set_params(params), std::runtime_error);
+  params = ParamsWithIterations(8);
+  params.pcg_iter_max = 1;
+  params.diag_init = 0;  // The existing constructor accepts zero.
+  CHECK_NOTHROW(solver.set_params(params));
 }
