@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <stdexcept>
 
 #include "caspar_mappings.h"
@@ -17,6 +18,10 @@
 #include "kernel_Matrix21_update_r_first.h"
 #include "kernel_Matrix21_update_step.h"
 #include "kernel_Matrix21_update_step_first.h"
+#include "kernel_coupled_rosenbrock_jtjnjtr_direct.h"
+#include "kernel_coupled_rosenbrock_res_jac.h"
+#include "kernel_coupled_rosenbrock_res_jac_first.h"
+#include "kernel_coupled_rosenbrock_score.h"
 #include "kernel_rosenbrock_jtjnjtr_direct.h"
 #include "kernel_rosenbrock_res_jac.h"
 #include "kernel_rosenbrock_res_jac_first.h"
@@ -51,13 +56,16 @@ T* assign_and_increment(uint8_t* origin_ptr, size_t& offset, size_t num_elements
 namespace caspar {
 
 GraphSolver::GraphSolver(const SolverParams<double>& params, size_t Matrix21_num_max,
-                         size_t rosenbrock_num_max, int device_id)
+                         size_t rosenbrock_num_max, size_t coupled_rosenbrock_num_max,
+                         int device_id)
     : params_(params),
       device_id_(device_id),
       Matrix21_num_(Matrix21_num_max),
       Matrix21_num_max_(Matrix21_num_max),
       rosenbrock_num_(rosenbrock_num_max),
-      rosenbrock_num_max_(rosenbrock_num_max) {
+      rosenbrock_num_max_(rosenbrock_num_max),
+      coupled_rosenbrock_num_(coupled_rosenbrock_num_max),
+      coupled_rosenbrock_num_max_(coupled_rosenbrock_num_max) {
   indices_valid_ = false;
   set_params(params);
   allocation_size_ = get_nbytes();
@@ -87,11 +95,21 @@ GraphSolver::GraphSolver(const SolverParams<double>& params, size_t Matrix21_num
       assign_and_increment<double>(origin_ptr_, offset, 2 * Matrix21_num_, 4);
   facs__rosenbrock__args__x__idx_shared_ =
       assign_and_increment<SharedIndex>(origin_ptr_, offset, 1 * rosenbrock_num_, 4);
+  facs__coupled_rosenbrock__args__x__idx_shared_ =
+      assign_and_increment<SharedIndex>(origin_ptr_, offset, 1 * coupled_rosenbrock_num_, 4);
+  facs__coupled_rosenbrock__args__y__idx_shared_ =
+      assign_and_increment<SharedIndex>(origin_ptr_, offset, 1 * coupled_rosenbrock_num_, 4);
   marker__scratch_inout_ = assign_and_increment<double>(origin_ptr_, offset, 0 * 0, 4);
   facs__rosenbrock__res_ =
       assign_and_increment<double>(origin_ptr_, offset, 2 * rosenbrock_num_, 4);
+  facs__coupled_rosenbrock__res_ =
+      assign_and_increment<double>(origin_ptr_, offset, 2 * coupled_rosenbrock_num_, 4);
   facs__rosenbrock__args__x__jac_ =
       assign_and_increment<double>(origin_ptr_, offset, 1 * rosenbrock_num_, 4);
+  facs__coupled_rosenbrock__args__x__jac_ =
+      assign_and_increment<double>(origin_ptr_, offset, 1 * coupled_rosenbrock_num_, 4);
+  facs__coupled_rosenbrock__args__y__jac_ =
+      assign_and_increment<double>(origin_ptr_, offset, 0 * coupled_rosenbrock_num_, 4);
   nodes__Matrix21__z_ = assign_and_increment<double>(origin_ptr_, offset, 2 * Matrix21_num_, 4);
   nodes__Matrix21__z_end__ = assign_and_increment<double>(origin_ptr_, offset, 0 * 0, 4);
   nodes__Matrix21__p_ = assign_and_increment<double>(origin_ptr_, offset, 2 * Matrix21_num_, 4);
@@ -118,6 +136,8 @@ GraphSolver::GraphSolver(const SolverParams<double>& params, size_t Matrix21_num
   marker__precond_end_ = assign_and_increment<double>(origin_ptr_, offset, 0 * 0, 1);
   marker__jp_start_ = assign_and_increment<double>(origin_ptr_, offset, 0 * 0, 4);
   facs__rosenbrock__jp_ = assign_and_increment<double>(origin_ptr_, offset, 2 * rosenbrock_num_, 4);
+  facs__coupled_rosenbrock__jp_ =
+      assign_and_increment<double>(origin_ptr_, offset, 2 * coupled_rosenbrock_num_, 4);
   marker__jp_end_ = assign_and_increment<double>(origin_ptr_, offset, 0 * 0, 1);
   solver__current_diag_ = assign_and_increment<double>(origin_ptr_, offset, 1 * 1, 1);
   solver__alpha_numerator_ = assign_and_increment<double>(origin_ptr_, offset, 1 * 1, 1);
@@ -183,6 +203,7 @@ SolveResult GraphSolver::solve(bool print_progress, bool verbose_logging) {
     score_best_pcg = score_best;
     // The inner loop can break before storing a proposal in storage_new_best_.
     bool have_pcg_proposal = false;
+    double pred_decrease_best_pcg = 0;
     for (pcg_iter_ = 0; pcg_iter_ < params_.pcg_iter_max; pcg_iter_++) {
       DoNormalize();
 
@@ -202,11 +223,15 @@ SolveResult GraphSolver::solve(bool print_progress, bool verbose_logging) {
       }
       if (params_.pcg_rel_decrease_min != -1.0f || params_.pcg_rel_score_exit != -1.0f) {
         double score_new_pcg = DoRetractScore();
-        if (!(score_new_pcg <= score_best_pcg * params_.pcg_rel_decrease_min)) {
+        if (!std::isfinite(score_new_pcg) ||
+            (params_.pcg_rel_decrease_min != -1.0f &&
+             !(score_new_pcg <= score_best_pcg * params_.pcg_rel_decrease_min))) {
           break;
         }
         std::swap(nodes__Matrix21__storage_check_, nodes__Matrix21__storage_new_best_);
         score_best_pcg = score_new_pcg;
+        // Retain the prediction before the next PCG update overwrites the step.
+        pred_decrease_best_pcg = GetPredDecrease();
         have_pcg_proposal = true;
         if (params_.pcg_rel_score_exit != -1.0f &&
             score_best_pcg < score_best * params_.pcg_rel_score_exit) {
@@ -228,7 +253,11 @@ SolveResult GraphSolver::solve(bool print_progress, bool verbose_logging) {
     const double diag_current = diag;
     bool step_accepted = false;
     if (have_pcg_proposal && score_best_pcg < score_best * params_.solver_rel_decrease_min) {
-      quality = (score_best - score_best_pcg) / GetPredDecrease();
+      const double pred_decrease =
+          params_.pcg_rel_decrease_min == -1.0f && params_.pcg_rel_score_exit == -1.0f
+              ? GetPredDecrease()
+              : pred_decrease_best_pcg;
+      quality = (score_best - score_best_pcg) / pred_decrease;
       const double quality_tmp = 2 * quality - 1;
       double scale =
           std::max(params_.diag_scaling_down, 1.0f - quality_tmp * quality_tmp * quality_tmp);
@@ -302,6 +331,18 @@ double GraphSolver::DoResJacFirst() {
       facs__rosenbrock__res_, rosenbrock_num_, solver__res_tot_, nodes__Matrix21__r_k_,
       Matrix21_num_, nodes__Matrix21__precond_diag_, Matrix21_num_, nodes__Matrix21__precond_tril_,
       Matrix21_num_, rosenbrock_num_);
+
+  CoupledRosenbrockResJacFirst(
+      nodes__Matrix21__storage_current_, Matrix21_num_max_,
+      facs__coupled_rosenbrock__args__x__idx_shared_, nodes__Matrix21__storage_current_,
+      Matrix21_num_max_, facs__coupled_rosenbrock__args__y__idx_shared_,
+
+      facs__coupled_rosenbrock__res_, coupled_rosenbrock_num_, solver__res_tot_,
+      facs__coupled_rosenbrock__args__x__jac_, coupled_rosenbrock_num_, nodes__Matrix21__r_k_,
+      Matrix21_num_, nodes__Matrix21__precond_diag_, Matrix21_num_, nodes__Matrix21__precond_tril_,
+      Matrix21_num_, facs__coupled_rosenbrock__args__y__jac_, coupled_rosenbrock_num_,
+      nodes__Matrix21__r_k_, Matrix21_num_, nodes__Matrix21__precond_diag_, Matrix21_num_,
+      nodes__Matrix21__precond_tril_, Matrix21_num_, coupled_rosenbrock_num_);
   Copy(marker__r_k_start_, marker__r_k_end_, marker__r_0_start_);
   Copy(marker__r_k_start_, marker__r_k_end_, marker__Mp_start_);
   return 0.5 * ReadCuMem(solver__res_tot_);
@@ -317,6 +358,19 @@ void GraphSolver::DoResJac() {
 
                    nodes__Matrix21__r_k_, Matrix21_num_, nodes__Matrix21__precond_diag_,
                    Matrix21_num_, nodes__Matrix21__precond_tril_, Matrix21_num_, rosenbrock_num_);
+
+  CoupledRosenbrockResJac(
+      nodes__Matrix21__storage_current_, Matrix21_num_max_,
+      facs__coupled_rosenbrock__args__x__idx_shared_, nodes__Matrix21__storage_current_,
+      Matrix21_num_max_, facs__coupled_rosenbrock__args__y__idx_shared_,
+
+      facs__coupled_rosenbrock__res_, coupled_rosenbrock_num_,
+
+      facs__coupled_rosenbrock__args__x__jac_, coupled_rosenbrock_num_, nodes__Matrix21__r_k_,
+      Matrix21_num_, nodes__Matrix21__precond_diag_, Matrix21_num_, nodes__Matrix21__precond_tril_,
+      Matrix21_num_, facs__coupled_rosenbrock__args__y__jac_, coupled_rosenbrock_num_,
+      nodes__Matrix21__r_k_, Matrix21_num_, nodes__Matrix21__precond_diag_, Matrix21_num_,
+      nodes__Matrix21__precond_tril_, Matrix21_num_, coupled_rosenbrock_num_);
   Copy(marker__r_k_start_, marker__r_k_end_, marker__r_0_start_);
   Copy(marker__r_k_start_, marker__r_k_end_, marker__Mp_start_);
 }
@@ -329,7 +383,14 @@ void GraphSolver::DoNormalize() {
                     Matrix21_num_, Matrix21_num_);
 }
 
-void GraphSolver::DoJtjpDirect() {}
+void GraphSolver::DoJtjpDirect() {
+  CoupledRosenbrockJtjnjtrDirect(
+      nodes__Matrix21__p_, Matrix21_num_, facs__coupled_rosenbrock__args__x__idx_shared_,
+      facs__coupled_rosenbrock__args__x__jac_, coupled_rosenbrock_num_, nodes__Matrix21__p_,
+      Matrix21_num_, facs__coupled_rosenbrock__args__y__idx_shared_,
+      facs__coupled_rosenbrock__args__y__jac_, coupled_rosenbrock_num_, nodes__Matrix21__w_,
+      Matrix21_num_, nodes__Matrix21__w_, Matrix21_num_, coupled_rosenbrock_num_);
+}
 
 void GraphSolver::DoAlphaFirst() {
   Zero(solver__alpha_numerator_, solver__alpha_denominator_ + 1);
@@ -362,6 +423,7 @@ void GraphSolver::DoUpdateStep() {
 
 void GraphSolver::DoUpdateRFirst() {
   Zero(solver__r_0_norm2_tot_, solver__r_0_norm2_tot_ + 1);
+  Zero(solver__r_kp1_norm2_tot_, solver__r_kp1_norm2_tot_ + 1);
 
   Matrix21UpdateRFirst(nodes__Matrix21__r_k_, Matrix21_num_, nodes__Matrix21__w_, Matrix21_num_,
                        solver__neg_alpha_, nodes__Matrix21__r_k_, Matrix21_num_,
@@ -386,6 +448,11 @@ double GraphSolver::DoRetractScore() {
   Zero(solver__res_tot_, solver__res_tot_ + 1);
   RosenbrockScore(nodes__Matrix21__storage_check_, Matrix21_num_max_,
                   facs__rosenbrock__args__x__idx_shared_, solver__res_tot_, rosenbrock_num_);
+  CoupledRosenbrockScore(nodes__Matrix21__storage_check_, Matrix21_num_max_,
+                         facs__coupled_rosenbrock__args__x__idx_shared_,
+                         nodes__Matrix21__storage_check_, Matrix21_num_max_,
+                         facs__coupled_rosenbrock__args__y__idx_shared_, solver__res_tot_,
+                         coupled_rosenbrock_num_);
   return 0.5 * ReadCuMem(solver__res_tot_);
 }
 
@@ -499,6 +566,76 @@ void GraphSolver::SetRosenbrockXIndicesFromDevice(const unsigned int* const indi
   }
   SharedIndices(indices, facs__rosenbrock__args__x__idx_shared_, num);
 }
+void GraphSolver::SetCoupledRosenbrockNum(const size_t num) {
+  if (num > coupled_rosenbrock_num_max_) {
+    throw std::runtime_error(std::to_string(num) + " > coupled_rosenbrock_num_max_");
+  }
+  coupled_rosenbrock_num_ = num;
+}
+void GraphSolver::SetCoupledRosenbrockXIndicesFromHost(const unsigned int* const indices,
+                                                       size_t num) {
+  cudaSetDevice(device_id_);
+  if (num != coupled_rosenbrock_num_) {
+    throw std::runtime_error(
+        std::to_string(num) +
+        " != coupled_rosenbrock_num_. Use Setcoupled_rosenbrockNum before setting indices.");
+  }
+  cudaMemcpy((unsigned int*)marker__scratch_inout_, indices, num * sizeof(unsigned int),
+             cudaMemcpyHostToDevice);
+  SetCoupledRosenbrockXIndicesFromDevice((unsigned int*)marker__scratch_inout_, num);
+}
+
+void GraphSolver::SetCoupledRosenbrockXIndicesFromDevice(const unsigned int* const indices,
+                                                         size_t num) {
+  indices_valid_ = false;
+  cudaSetDevice(device_id_);
+
+  if (num != coupled_rosenbrock_num_) {
+    throw std::runtime_error(
+        std::to_string(num) +
+        " != coupled_rosenbrock_num_. Use Setcoupled_rosenbrockNum before setting indices.");
+  }
+
+  size_t tmp_size = SortIndicesGetTmpNbytes(num);
+  if (tmp_size + num > scratch_inout_size_) {
+    throw std::runtime_error("Scratch_inout_size too small. tmp_size: " + std::to_string(tmp_size) +
+                             ", num: " + std::to_string(num) +
+                             ", scratch_inout_size_: " + std::to_string(scratch_inout_size_));
+  }
+  SharedIndices(indices, facs__coupled_rosenbrock__args__x__idx_shared_, num);
+}
+void GraphSolver::SetCoupledRosenbrockYIndicesFromHost(const unsigned int* const indices,
+                                                       size_t num) {
+  cudaSetDevice(device_id_);
+  if (num != coupled_rosenbrock_num_) {
+    throw std::runtime_error(
+        std::to_string(num) +
+        " != coupled_rosenbrock_num_. Use Setcoupled_rosenbrockNum before setting indices.");
+  }
+  cudaMemcpy((unsigned int*)marker__scratch_inout_, indices, num * sizeof(unsigned int),
+             cudaMemcpyHostToDevice);
+  SetCoupledRosenbrockYIndicesFromDevice((unsigned int*)marker__scratch_inout_, num);
+}
+
+void GraphSolver::SetCoupledRosenbrockYIndicesFromDevice(const unsigned int* const indices,
+                                                         size_t num) {
+  indices_valid_ = false;
+  cudaSetDevice(device_id_);
+
+  if (num != coupled_rosenbrock_num_) {
+    throw std::runtime_error(
+        std::to_string(num) +
+        " != coupled_rosenbrock_num_. Use Setcoupled_rosenbrockNum before setting indices.");
+  }
+
+  size_t tmp_size = SortIndicesGetTmpNbytes(num);
+  if (tmp_size + num > scratch_inout_size_) {
+    throw std::runtime_error("Scratch_inout_size too small. tmp_size: " + std::to_string(tmp_size) +
+                             ", num: " + std::to_string(num) +
+                             ", scratch_inout_size_: " + std::to_string(scratch_inout_size_));
+  }
+  SharedIndices(indices, facs__coupled_rosenbrock__args__y__idx_shared_, num);
+}
 
 size_t GraphSolver::get_nbytes() {
   size_t offset = 0;
@@ -508,10 +645,15 @@ size_t GraphSolver::get_nbytes() {
   increment_offset<double>(offset, 2 * Matrix21_num_, 4);
   increment_offset<double>(offset, 2 * Matrix21_num_, 4);
   increment_offset<SharedIndex>(offset, 1 * rosenbrock_num_, 4);
+  increment_offset<SharedIndex>(offset, 1 * coupled_rosenbrock_num_, 4);
+  increment_offset<SharedIndex>(offset, 1 * coupled_rosenbrock_num_, 4);
   at_least = std::max(at_least, offset + std::max({2 * Matrix21_num_max_}) * sizeof(double));
   increment_offset<double>(offset, 0 * 0, 4);
   increment_offset<double>(offset, 2 * rosenbrock_num_, 4);
+  increment_offset<double>(offset, 2 * coupled_rosenbrock_num_, 4);
   increment_offset<double>(offset, 1 * rosenbrock_num_, 4);
+  increment_offset<double>(offset, 1 * coupled_rosenbrock_num_, 4);
+  increment_offset<double>(offset, 0 * coupled_rosenbrock_num_, 4);
   increment_offset<double>(offset, 2 * Matrix21_num_, 4);
   increment_offset<double>(offset, 0 * 0, 4);
   increment_offset<double>(offset, 2 * Matrix21_num_, 4);
@@ -536,6 +678,7 @@ size_t GraphSolver::get_nbytes() {
   increment_offset<double>(offset, 0 * 0, 1);
   increment_offset<double>(offset, 0 * 0, 4);
   increment_offset<double>(offset, 2 * rosenbrock_num_, 4);
+  increment_offset<double>(offset, 2 * coupled_rosenbrock_num_, 4);
   increment_offset<double>(offset, 0 * 0, 1);
   increment_offset<double>(offset, 1 * 1, 1);
   increment_offset<double>(offset, 1 * 1, 1);

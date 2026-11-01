@@ -84,6 +84,13 @@ def _make_solver_library() -> CasparLibrary:
     ) -> sf.V2:
         return sf.V2(10 * (x[1] - x[0] * x[0]), 1 - x[0])
 
+    @caslib.add_factor
+    def coupled_rosenbrock(
+        x: T.Annotated[sf.V2, mem.TunableShared],
+        y: T.Annotated[sf.V2, mem.TunableShared],
+    ) -> sf.V2:
+        return rosenbrock(sf.V2(x[0], y[1]))
+
     return caslib
 
 

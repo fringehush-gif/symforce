@@ -41,9 +41,10 @@ class GraphSolver {
    * @param params: The params to use for the solver
    * @param Matrix21_num_max the maximum number of Matrix21s
    * @param rosenbrock_num_max the maximum number of rosenbrocks
+   * @param coupled_rosenbrock_num_max the maximum number of coupled_rosenbrocks
    */
   GraphSolver(const SolverParams<double>& params, size_t Matrix21_num_max,
-              size_t rosenbrock_num_max, int device_id = 0);
+              size_t rosenbrock_num_max, size_t coupled_rosenbrock_num_max, int device_id = 0);
 
   // This class is managing cuda memory and cannot be copied.
   GraphSolver(const GraphSolver&) = delete;
@@ -67,8 +68,8 @@ class GraphSolver {
   /**
    * Finish the indices.
    *
-   * This function has to be called after all indices are set and before the
-   * solve function is called.
+   * This function has to be called after all indices are set and before the solve function is
+   * called.
    */
   void finish_indices();
 
@@ -92,16 +93,14 @@ class GraphSolver {
   void SetMatrix21NodesFromStackedDevice(const double* const data, size_t offset, size_t num);
 
   /**
-   * Read the current value for the Matrix21 nodes into the stacked output host
-   * data.
+   * Read the current value for the Matrix21 nodes into the stacked output host data.
    *
    * The offset can be used to start reading from a specific index.
    */
   void GetMatrix21NodesToStackedHost(double* const data, size_t offset, size_t num);
 
   /**
-   * Read the current value for the Matrix21 nodes into the stacked output
-   * device data.
+   * Read the current value for the Matrix21 nodes into the stacked output device data.
    *
    * The offset can be used to start reading from a specific index.
    */
@@ -110,9 +109,9 @@ class GraphSolver {
   /**
    * Set the current number of active nodes of type Matrix21.
    *
-   * The value is set during initialization and this function is only needed if
-   * you want to change the problem between optimization runs. This is work in
-   * progress and can have performance impacts.
+   * The value is set during initialization and this function is only needed if you want to
+   * change the problem between optimization runs. This is work in progress and can have
+   * performance impacts.
    */
   void SetMatrix21Num(size_t num);
 
@@ -129,13 +128,43 @@ class GraphSolver {
   /**
    * Set the current number of Rosenbrock factors.
    *
-   * The value is set during initialization and this function is only needed if
-   * you want to change the problem between optimization runs. This is work in
-   * progress and can have performance impacts.
+   * The value is set during initialization and this function is only needed if you want to
+   * change the problem between optimization runs. This is work in progress and can have
+   * performance impacts.
    */
   void SetRosenbrockNum(size_t num);
 
+  /**
+   * Set the indices for the x argument for the CoupledRosenbrock factor from host.
+   */
+  void SetCoupledRosenbrockXIndicesFromHost(const unsigned int* const indices, size_t num);
+
+  /**
+   * Set the indices for the x argument for the CoupledRosenbrock factor from device.
+   */
+  void SetCoupledRosenbrockXIndicesFromDevice(const unsigned int* const indices, size_t num);
+
+  /**
+   * Set the indices for the y argument for the CoupledRosenbrock factor from host.
+   */
+  void SetCoupledRosenbrockYIndicesFromHost(const unsigned int* const indices, size_t num);
+
+  /**
+   * Set the indices for the y argument for the CoupledRosenbrock factor from device.
+   */
+  void SetCoupledRosenbrockYIndicesFromDevice(const unsigned int* const indices, size_t num);
+
+  /**
+   * Set the current number of CoupledRosenbrock factors.
+   *
+   * The value is set during initialization and this function is only needed if you want to
+   * change the problem between optimization runs. This is work in progress and can have
+   * performance impacts.
+   */
+  void SetCoupledRosenbrockNum(size_t num);
+
  private:
+  friend struct GraphSolverTestAccess;
   SolverParams<double> params_;
   int device_id_;
   uint8_t* origin_ptr_;
@@ -154,6 +183,8 @@ class GraphSolver {
   size_t Matrix21_num_max_;
   size_t rosenbrock_num_;
   size_t rosenbrock_num_max_;
+  size_t coupled_rosenbrock_num_;
+  size_t coupled_rosenbrock_num_max_;
 
   size_t get_nbytes();
   double LinearizeFirst();
@@ -178,9 +209,14 @@ class GraphSolver {
   double* nodes__Matrix21__storage_check_;
   double* nodes__Matrix21__storage_new_best_;
   SharedIndex* facs__rosenbrock__args__x__idx_shared_;
+  SharedIndex* facs__coupled_rosenbrock__args__x__idx_shared_;
+  SharedIndex* facs__coupled_rosenbrock__args__y__idx_shared_;
   double* marker__scratch_inout_;
   double* facs__rosenbrock__res_;
+  double* facs__coupled_rosenbrock__res_;
   double* facs__rosenbrock__args__x__jac_;
+  double* facs__coupled_rosenbrock__args__x__jac_;
+  double* facs__coupled_rosenbrock__args__y__jac_;
   double* nodes__Matrix21__z_;
   double* nodes__Matrix21__z_end__;
   double* nodes__Matrix21__p_;
@@ -205,6 +241,7 @@ class GraphSolver {
   double* marker__precond_end_;
   double* marker__jp_start_;
   double* facs__rosenbrock__jp_;
+  double* facs__coupled_rosenbrock__jp_;
   double* marker__jp_end_;
   double* solver__current_diag_;
   double* solver__alpha_numerator_;

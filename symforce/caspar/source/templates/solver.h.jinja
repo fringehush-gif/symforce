@@ -210,6 +210,7 @@ class {{ solver.struct_name }} {
   {% endfor %}
 
  private:
+  friend struct GraphSolverTestAccess;
   SolverParams<{{solver.linear_t}}> params_;
   int device_id_;
   uint8_t* origin_ptr_;
