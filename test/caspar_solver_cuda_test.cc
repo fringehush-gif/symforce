@@ -6,6 +6,7 @@
 #include <cmath>
 #include <cstddef>
 #include <stdexcept>
+#include <type_traits>
 #include <vector>
 
 #include <catch2/catch_approx.hpp>
@@ -34,7 +35,17 @@ struct GraphSolverTestAccess {
 
 namespace {
 
+static_assert(!std::is_copy_constructible_v<caspar::GraphSolver>);
+static_assert(!std::is_copy_assignable_v<caspar::GraphSolver>);
+static_assert(!std::is_move_constructible_v<caspar::GraphSolver>);
+static_assert(!std::is_move_assignable_v<caspar::GraphSolver>);
+
 constexpr size_t kNumNodes = 4096;
+
+// C++17 guaranteed copy elision supports factories for this owning solver.
+caspar::GraphSolver MakeSolver(const caspar::SolverParams<double>& params) {
+  return caspar::GraphSolver(params, kNumNodes, kNumNodes, kNumNodes);
+}
 
 bool HaveDevice() {
   int count = 0;
@@ -48,7 +59,7 @@ struct Solve {
 
 // Independent Rosenbrock problems by default; the coupled mode adds a ring.
 Solve Run(const caspar::SolverParams<double>& params, const bool coupled = false) {
-  caspar::GraphSolver solver(params, kNumNodes, kNumNodes, kNumNodes);
+  auto solver = MakeSolver(params);
   solver.SetCoupledRosenbrockNum(coupled ? kNumNodes : 0);
 
   std::vector<unsigned int> indices(kNumNodes);
@@ -177,7 +188,7 @@ TEST_CASE("A solver with no inner iterations is rejected", "[caspar_solver_cuda_
 TEST_CASE("Invalid post-construction solver parameters are rejected", "[caspar_solver_cuda_test]") {
   REQUIRE(HaveDevice());
   caspar::SolverParams<double> params = ParamsWithIterations(8);
-  caspar::GraphSolver solver(params, kNumNodes, kNumNodes, kNumNodes);
+  auto solver = MakeSolver(params);
   solver.SetCoupledRosenbrockNum(0);
   for (const int invalid : {0, -1}) {
     params.pcg_iter_max = invalid;

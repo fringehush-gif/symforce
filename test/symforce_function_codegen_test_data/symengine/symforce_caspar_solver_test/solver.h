@@ -46,12 +46,12 @@ class GraphSolver {
   GraphSolver(const SolverParams<double>& params, size_t Matrix21_num_max,
               size_t rosenbrock_num_max, size_t coupled_rosenbrock_num_max, int device_id = 0);
 
-  // This class is managing cuda memory and cannot be copied.
+  // CUDA allocation ownership cannot be copied or moved.
   GraphSolver(const GraphSolver&) = delete;
   GraphSolver& operator=(const GraphSolver&) = delete;
 
-  GraphSolver(GraphSolver&&) = default;
-  GraphSolver& operator=(GraphSolver&&) = default;
+  GraphSolver(GraphSolver&&) = delete;
+  GraphSolver& operator=(GraphSolver&&) = delete;
 
   ~GraphSolver();
 

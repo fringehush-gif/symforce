@@ -60,12 +60,12 @@ class {{ solver.struct_name }} {
       int device_id = 0
   );
 
-  // This class is managing cuda memory and cannot be copied.
+  // CUDA allocation ownership cannot be copied or moved.
   {{ solver.struct_name }}( const {{ solver.struct_name }}&) = delete;
   {{ solver.struct_name }}& operator=( const {{ solver.struct_name }}&) = delete;
 
-  {{ solver.struct_name }}( {{ solver.struct_name }}&&) = default;
-  {{ solver.struct_name }}& operator=( {{ solver.struct_name }}&&) = default;
+  {{ solver.struct_name }}( {{ solver.struct_name }}&&) = delete;
+  {{ solver.struct_name }}& operator=( {{ solver.struct_name }}&&) = delete;
 
   ~{{ solver.struct_name }}();
 
