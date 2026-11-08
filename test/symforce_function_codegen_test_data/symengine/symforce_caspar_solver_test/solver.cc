@@ -3,7 +3,9 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <limits>
 #include <stdexcept>
+#include <string>
 
 #include "caspar_mappings.h"
 #include "kernel_Matrix21_alpha_denominator_or_beta_numerator.h"
@@ -31,6 +33,12 @@
 #include "sort_indices.h"
 
 namespace {
+
+void CheckReadbackCuda(cudaError_t status, const char* operation) {
+  if (status != cudaSuccess) {
+    throw std::runtime_error(std::string(operation) + " failed: " + cudaGetErrorString(status));
+  }
+}
 
 void make_aligned(size_t& offset, size_t alignment_bytes) {
   offset = ((offset + alignment_bytes - 1) / alignment_bytes) * alignment_bytes;
@@ -514,22 +522,47 @@ void GraphSolver::SetMatrix21NodesFromStackedDevice(const double* const data, co
 
 void GraphSolver::GetMatrix21NodesToStackedHost(double* const data, const size_t offset,
                                                 const size_t num) {
-  cudaSetDevice(device_id_);
-  if (offset + num > Matrix21_num_) {
-    throw std::runtime_error(std::to_string(offset + num) + " > Matrix21_num_");
+  if (offset > Matrix21_num_ || num > Matrix21_num_ - offset) {
+    throw std::runtime_error("Matrix21 readback range exceeds node count");
   }
-  Matrix21CasparToStacked(nodes__Matrix21__storage_current_, marker__scratch_inout_,
-                          Matrix21_num_max_, offset, num);
-  cudaMemcpy(data, marker__scratch_inout_, 2 * num * sizeof(double), cudaMemcpyDeviceToHost);
+  if (num == 0) {
+    return;
+  }
+  constexpr size_t kDimension = 2;
+  // The current mapper rounds up unsigned counts in blocks of 32.
+  const size_t limit = std::numeric_limits<unsigned int>::max();
+  if (Matrix21_num_max_ > limit || offset > limit || num > limit - 31 || kDimension == 0 ||
+      num > std::numeric_limits<size_t>::max() / sizeof(double) / kDimension) {
+    throw std::runtime_error("Matrix21 readback exceeds mapping argument limits");
+  }
+  CheckReadbackCuda(cudaSetDevice(device_id_), "cudaSetDevice");
+  CheckReadbackCuda(Matrix21CasparToStacked(nodes__Matrix21__storage_current_,
+                                            marker__scratch_inout_, Matrix21_num_max_, offset, num),
+                    "Matrix21CasparToStacked");
+  CheckReadbackCuda(cudaMemcpy(data, marker__scratch_inout_, kDimension * num * sizeof(double),
+                               cudaMemcpyDeviceToHost),
+                    "cudaMemcpy device-to-host");
 }
 
 void GraphSolver::GetMatrix21NodesToStackedDevice(double* const data, const size_t offset,
                                                   const size_t num) {
-  cudaSetDevice(device_id_);
-  if (offset + num > Matrix21_num_) {
-    throw std::runtime_error(std::to_string(offset + num) + " > Matrix21_num_");
+  if (offset > Matrix21_num_ || num > Matrix21_num_ - offset) {
+    throw std::runtime_error("Matrix21 readback range exceeds node count");
   }
-  Matrix21CasparToStacked(nodes__Matrix21__storage_current_, data, Matrix21_num_max_, offset, num);
+  if (num == 0) {
+    return;
+  }
+  constexpr size_t kDimension = 2;
+  // The current mapper rounds up unsigned counts in blocks of 32.
+  const size_t limit = std::numeric_limits<unsigned int>::max();
+  if (Matrix21_num_max_ > limit || offset > limit || num > limit - 31 || kDimension == 0 ||
+      num > std::numeric_limits<size_t>::max() / sizeof(double) / kDimension) {
+    throw std::runtime_error("Matrix21 readback exceeds mapping argument limits");
+  }
+  CheckReadbackCuda(cudaSetDevice(device_id_), "cudaSetDevice");
+  CheckReadbackCuda(Matrix21CasparToStacked(nodes__Matrix21__storage_current_, data,
+                                            Matrix21_num_max_, offset, num),
+                    "Matrix21CasparToStacked");
 }
 
 void GraphSolver::SetRosenbrockNum(const size_t num) {
@@ -647,7 +680,9 @@ size_t GraphSolver::get_nbytes() {
   increment_offset<SharedIndex>(offset, 1 * rosenbrock_num_, 4);
   increment_offset<SharedIndex>(offset, 1 * coupled_rosenbrock_num_, 4);
   increment_offset<SharedIndex>(offset, 1 * coupled_rosenbrock_num_, 4);
-  at_least = std::max(at_least, offset + std::max({2 * Matrix21_num_max_}) * sizeof(double));
+  at_least = std::max(at_least, offset + std::max({2 * Matrix21_num_max_, 1 * rosenbrock_num_max_,
+                                                   1 * coupled_rosenbrock_num_max_}) *
+                                             sizeof(double));
   increment_offset<double>(offset, 0 * 0, 4);
   increment_offset<double>(offset, 2 * rosenbrock_num_, 4);
   increment_offset<double>(offset, 2 * coupled_rosenbrock_num_, 4);

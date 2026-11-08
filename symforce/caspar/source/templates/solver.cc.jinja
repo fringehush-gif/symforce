@@ -8,6 +8,8 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <limits>
+#include <string>
 
 #include "caspar_mappings.h"
 #include "shared_indices.h"
@@ -42,6 +44,12 @@
 {% endfor %}
 
 namespace {
+
+void CheckReadbackCuda(cudaError_t status, const char* operation) {
+  if (status != cudaSuccess) {
+    throw std::runtime_error(std::string(operation) + " failed: " + cudaGetErrorString(status));
+  }
+}
 
 void make_aligned(size_t& offset, size_t alignment_bytes) {
   offset = ((offset + alignment_bytes - 1) / alignment_bytes) * alignment_bytes;
@@ -692,25 +700,49 @@ void {{ solver.struct_name }}::Set{{nodetype.__name__}}NodesFromStackedDevice(
 
 void {{solver.struct_name}}::Get{{nodetype.__name__}}NodesToStackedHost(
     {{solver.storage_t}}* const data, const size_t offset, const size_t num) {
-  cudaSetDevice(device_id_);
-  if (offset + num > {{num_key(nodetype)}}){
-    throw std::runtime_error(std::to_string(offset + num) + " > {{num_key(nodetype)}}");
+  if (offset > {{num_key(nodetype)}} || num > {{num_key(nodetype)}} - offset) {
+    throw std::runtime_error("{{nodetype.__name__}} readback range exceeds node count");
   }
-  {{nodetype.__name__}}CasparToStacked({{node_key(nodetype, "storage_current")}},
-                                          marker__scratch_inout_, {{num_max_key(nodetype)}},
-                                          offset, num);
-  cudaMemcpy(data, marker__scratch_inout_, {{Ops.storage_dim(nodetype)}} * num * sizeof({{solver.storage_t}}),
-             cudaMemcpyDeviceToHost);
+  if (num == 0) {
+    return;
+  }
+  constexpr size_t kDimension = {{Ops.storage_dim(nodetype)}};
+  // The current mapper rounds up unsigned counts in blocks of 32.
+  const size_t limit = std::numeric_limits<unsigned int>::max();
+  if ({{num_max_key(nodetype)}} > limit || offset > limit || num > limit - 31 ||
+      kDimension == 0 ||
+      num > std::numeric_limits<size_t>::max() / sizeof({{solver.storage_t}}) / kDimension) {
+    throw std::runtime_error("{{nodetype.__name__}} readback exceeds mapping argument limits");
+  }
+  CheckReadbackCuda(cudaSetDevice(device_id_), "cudaSetDevice");
+  CheckReadbackCuda({{nodetype.__name__}}CasparToStacked({{node_key(nodetype, "storage_current")}}, marker__scratch_inout_,
+                                          {{num_max_key(nodetype)}}, offset, num),
+                    "{{nodetype.__name__}}CasparToStacked");
+  CheckReadbackCuda(cudaMemcpy(data, marker__scratch_inout_,
+                               kDimension * num * sizeof({{solver.storage_t}}), cudaMemcpyDeviceToHost),
+                    "cudaMemcpy device-to-host");
 }
 
 void {{solver.struct_name}}::Get{{nodetype.__name__}}NodesToStackedDevice(
     {{solver.storage_t}}* const data, const size_t offset, const size_t num) {
-  cudaSetDevice(device_id_);
-  if (offset + num > {{num_key(nodetype)}}){
-    throw std::runtime_error(std::to_string(offset + num) + " > {{num_key(nodetype)}}");
+  if (offset > {{num_key(nodetype)}} || num > {{num_key(nodetype)}} - offset) {
+    throw std::runtime_error("{{nodetype.__name__}} readback range exceeds node count");
   }
-  {{nodetype.__name__}}CasparToStacked({{node_key(nodetype, "storage_current")}}, data,
-                                          {{num_max_key(nodetype)}}, offset, num);
+  if (num == 0) {
+    return;
+  }
+  constexpr size_t kDimension = {{Ops.storage_dim(nodetype)}};
+  // The current mapper rounds up unsigned counts in blocks of 32.
+  const size_t limit = std::numeric_limits<unsigned int>::max();
+  if ({{num_max_key(nodetype)}} > limit || offset > limit || num > limit - 31 ||
+      kDimension == 0 ||
+      num > std::numeric_limits<size_t>::max() / sizeof({{solver.storage_t}}) / kDimension) {
+    throw std::runtime_error("{{nodetype.__name__}} readback exceeds mapping argument limits");
+  }
+  CheckReadbackCuda(cudaSetDevice(device_id_), "cudaSetDevice");
+  CheckReadbackCuda({{nodetype.__name__}}CasparToStacked({{node_key(nodetype, "storage_current")}}, data,
+                                          {{num_max_key(nodetype)}}, offset, num),
+                    "{{nodetype.__name__}}CasparToStacked");
 }
 
 {% endfor%}

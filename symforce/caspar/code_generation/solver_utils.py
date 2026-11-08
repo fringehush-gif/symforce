@@ -55,9 +55,27 @@ def num_arg_key(thing: T.LieGroupElement | Factor) -> str:
     return num_key(thing, "num_max")
 
 
-def max_stacked_storage(*things: T.LieGroupElement) -> str:
-    inner = " , ".join(f" {StorageOps.storage_dim(n)} * {num_max_key(n)}" for n in things)
-    return f"std::max({{{inner}}})"
+def max_stacked_storage(
+    node_types: T.Sequence[T.LieGroupElement], factors: T.Sequence[Factor]
+) -> str:
+    # The result is in storage scalars; a scalar is at least as large as an index.
+    terms = [f"{StorageOps.storage_dim(n)} * {num_max_key(n)}" for n in node_types]
+    for fac in factors:
+        dims = [
+            StorageOps.storage_dim(typ)
+            for arg, typ in fac.const_arg_types.items()
+            if not fac.isconstuniq[arg]
+        ]
+        if any(fac.isnodeshared.values()) or any(fac.isconstshared.values()):
+            dims.append(1)  # unsigned-int host indices use the same scratch region
+        if dims:
+            terms.append(f"{max(dims)} * {num_max_key(fac)}")
+        terms.extend(
+            f"size_t({StorageOps.storage_dim(typ)})"
+            for arg, typ in fac.const_arg_types.items()
+            if fac.isconstuniq[arg]
+        )
+    return f"std::max({{{', '.join(terms)}}})" if terms else "0"
 
 
 class MemDesc:

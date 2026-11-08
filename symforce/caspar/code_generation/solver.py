@@ -91,7 +91,7 @@ class Solver:
         self.add_storage(self.fields)
         self.add_indices(self.fields)
         self.fields["marker__scratch_inout_"] = MemDesc(0, 0, self.storage_t)
-        self.at_least["marker__scratch_inout_"] = max_stacked_storage(*caslib.node_types)
+        self.at_least["marker__scratch_inout_"] = max_stacked_storage(caslib.node_types, caslib.factors)
 
         self.add_solver_data(self.fields)
         self.diag = sf.symbols("dampening")
