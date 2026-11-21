@@ -14,7 +14,6 @@
 #include "caspar_mappings.h"
 #include "shared_indices.h"
 #include "solver_tools.h"
-#include "sort_indices.h"
 
 {% for fac in solver.factors%}
 #include "kernel_{{fac.name}}_res_jac.h"
@@ -112,7 +111,6 @@ namespace caspar {
       origin_ptr_, offset, {{field.dim_real}} * {{field.num_key}}, {{field.alignment}});
   {% endfor %}
 
-  scratch_inout_size_ = offset;  // sorting, sum,
 }
 
 {{ solver.struct_name }}::~{{ solver.struct_name }}(){
@@ -780,12 +778,6 @@ void {{solver.struct_name}}::Get{{nodetype.__name__}}NodesToStackedDevice(
               + " != {{num_key(fac)}}. Use Set{{fac.name }}Num before setting indices.");
         }
 
-        size_t tmp_size = SortIndicesGetTmpNbytes(num);
-        if (tmp_size + num > scratch_inout_size_) {
-            throw std::runtime_error("Scratch_inout_size too small. tmp_size: " + std::to_string(tmp_size) +
-                                    ", num: " + std::to_string(num) +
-                                    ", scratch_inout_size_: " + std::to_string(scratch_inout_size_));
-        }
         SharedIndices(indices, {{arg_key(fac, arg, "idx_shared")}}, num);
       }
     {% endif %}
@@ -879,12 +871,6 @@ void {{solver.struct_name}}::Get{{nodetype.__name__}}NodesToStackedDevice(
                 + " != {{num_key(fac)}}. Use Set{{fac.name }}Num before setting indices.");
           }
 
-          size_t tmp_size = SortIndicesGetTmpNbytes(num);
-          if (tmp_size + num > scratch_inout_size_) {
-              throw std::runtime_error("Scratch_inout_size too small. tmp_size: " + std::to_string(tmp_size) +
-                                      ", num: " + std::to_string(num) +
-                                      ", scratch_inout_size_: " + std::to_string(scratch_inout_size_));
-          }
           SharedIndices(indices, {{arg_key(fac, arg, "idx_shared")}}, num);
 
         }

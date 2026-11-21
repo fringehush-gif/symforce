@@ -168,7 +168,6 @@ class GraphSolver {
   SolverParams<double> params_;
   int device_id_;
   uint8_t* origin_ptr_;
-  size_t scratch_inout_size_;
   size_t allocation_size_;
 
   int solver_iter_;

@@ -30,7 +30,6 @@
 #include "kernel_rosenbrock_score.h"
 #include "shared_indices.h"
 #include "solver_tools.h"
-#include "sort_indices.h"
 
 namespace {
 
@@ -158,8 +157,6 @@ GraphSolver::GraphSolver(const SolverParams<double>& params, size_t Matrix21_num
   solver__r_kp1_norm2_tot_ = assign_and_increment<double>(origin_ptr_, offset, 1 * 1, 1);
   solver__pred_decrease_tot_ = assign_and_increment<double>(origin_ptr_, offset, 1 * 1, 1);
   solver__res_tot_ = assign_and_increment<double>(origin_ptr_, offset, 1 * 1, 1);
-
-  scratch_inout_size_ = offset;  // sorting, sum,
 }
 
 GraphSolver::~GraphSolver() {
@@ -591,12 +588,6 @@ void GraphSolver::SetRosenbrockXIndicesFromDevice(const unsigned int* const indi
                              " != rosenbrock_num_. Use SetrosenbrockNum before setting indices.");
   }
 
-  size_t tmp_size = SortIndicesGetTmpNbytes(num);
-  if (tmp_size + num > scratch_inout_size_) {
-    throw std::runtime_error("Scratch_inout_size too small. tmp_size: " + std::to_string(tmp_size) +
-                             ", num: " + std::to_string(num) +
-                             ", scratch_inout_size_: " + std::to_string(scratch_inout_size_));
-  }
   SharedIndices(indices, facs__rosenbrock__args__x__idx_shared_, num);
 }
 void GraphSolver::SetCoupledRosenbrockNum(const size_t num) {
@@ -629,12 +620,6 @@ void GraphSolver::SetCoupledRosenbrockXIndicesFromDevice(const unsigned int* con
         " != coupled_rosenbrock_num_. Use Setcoupled_rosenbrockNum before setting indices.");
   }
 
-  size_t tmp_size = SortIndicesGetTmpNbytes(num);
-  if (tmp_size + num > scratch_inout_size_) {
-    throw std::runtime_error("Scratch_inout_size too small. tmp_size: " + std::to_string(tmp_size) +
-                             ", num: " + std::to_string(num) +
-                             ", scratch_inout_size_: " + std::to_string(scratch_inout_size_));
-  }
   SharedIndices(indices, facs__coupled_rosenbrock__args__x__idx_shared_, num);
 }
 void GraphSolver::SetCoupledRosenbrockYIndicesFromHost(const unsigned int* const indices,
@@ -661,12 +646,6 @@ void GraphSolver::SetCoupledRosenbrockYIndicesFromDevice(const unsigned int* con
         " != coupled_rosenbrock_num_. Use Setcoupled_rosenbrockNum before setting indices.");
   }
 
-  size_t tmp_size = SortIndicesGetTmpNbytes(num);
-  if (tmp_size + num > scratch_inout_size_) {
-    throw std::runtime_error("Scratch_inout_size too small. tmp_size: " + std::to_string(tmp_size) +
-                             ", num: " + std::to_string(num) +
-                             ", scratch_inout_size_: " + std::to_string(scratch_inout_size_));
-  }
   SharedIndices(indices, facs__coupled_rosenbrock__args__y__idx_shared_, num);
 }
 
