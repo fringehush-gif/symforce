@@ -33,7 +33,7 @@
 
 namespace {
 
-void CheckReadbackCuda(cudaError_t status, const char* operation) {
+void CheckCuda(cudaError_t status, const char* operation) {
   if (status != cudaSuccess) {
     throw std::runtime_error(std::string(operation) + " failed: " + cudaGetErrorString(status));
   }
@@ -80,17 +80,8 @@ GraphSolver::GraphSolver(const SolverParams<double>& params, size_t Matrix21_num
   if (device_id_ < 0) {
     throw std::runtime_error("Invalid CUDA device id: " + std::to_string(device_id_));
   }
-  if (device_id_ != 0) {
-    int deviceCount;
-    cudaGetDeviceCount(&deviceCount);
-    if (deviceCount <= device_id_) {
-      throw std::runtime_error("CUDA detected " + std::to_string(deviceCount) +
-                               " devices, but device " + std::to_string(device_id_) +
-                               " was requested (0-indexed)");
-    }
-  }
-  cudaSetDevice(device_id_);
-  cudaMalloc(&origin_ptr_, allocation_size_);
+  CheckCuda(cudaSetDevice(device_id_), "cudaSetDevice");
+  CheckCuda(cudaMalloc(&origin_ptr_, allocation_size_), "cudaMalloc");
 
   size_t offset = 0;
   marker__start_ = assign_and_increment<double>(origin_ptr_, offset, 0 * 0, 4);
@@ -532,13 +523,13 @@ void GraphSolver::GetMatrix21NodesToStackedHost(double* const data, const size_t
       num > std::numeric_limits<size_t>::max() / sizeof(double) / kDimension) {
     throw std::runtime_error("Matrix21 readback exceeds mapping argument limits");
   }
-  CheckReadbackCuda(cudaSetDevice(device_id_), "cudaSetDevice");
-  CheckReadbackCuda(Matrix21CasparToStacked(nodes__Matrix21__storage_current_,
-                                            marker__scratch_inout_, Matrix21_num_max_, offset, num),
-                    "Matrix21CasparToStacked");
-  CheckReadbackCuda(cudaMemcpy(data, marker__scratch_inout_, kDimension * num * sizeof(double),
-                               cudaMemcpyDeviceToHost),
-                    "cudaMemcpy device-to-host");
+  CheckCuda(cudaSetDevice(device_id_), "cudaSetDevice");
+  CheckCuda(Matrix21CasparToStacked(nodes__Matrix21__storage_current_, marker__scratch_inout_,
+                                    Matrix21_num_max_, offset, num),
+            "Matrix21CasparToStacked");
+  CheckCuda(cudaMemcpy(data, marker__scratch_inout_, kDimension * num * sizeof(double),
+                       cudaMemcpyDeviceToHost),
+            "cudaMemcpy device-to-host");
 }
 
 void GraphSolver::GetMatrix21NodesToStackedDevice(double* const data, const size_t offset,
@@ -556,10 +547,10 @@ void GraphSolver::GetMatrix21NodesToStackedDevice(double* const data, const size
       num > std::numeric_limits<size_t>::max() / sizeof(double) / kDimension) {
     throw std::runtime_error("Matrix21 readback exceeds mapping argument limits");
   }
-  CheckReadbackCuda(cudaSetDevice(device_id_), "cudaSetDevice");
-  CheckReadbackCuda(Matrix21CasparToStacked(nodes__Matrix21__storage_current_, data,
-                                            Matrix21_num_max_, offset, num),
-                    "Matrix21CasparToStacked");
+  CheckCuda(cudaSetDevice(device_id_), "cudaSetDevice");
+  CheckCuda(Matrix21CasparToStacked(nodes__Matrix21__storage_current_, data, Matrix21_num_max_,
+                                    offset, num),
+            "Matrix21CasparToStacked");
 }
 
 void GraphSolver::SetRosenbrockNum(const size_t num) {

@@ -44,7 +44,7 @@
 
 namespace {
 
-void CheckReadbackCuda(cudaError_t status, const char* operation) {
+void CheckCuda(cudaError_t status, const char* operation) {
   if (status != cudaSuccess) {
     throw std::runtime_error(std::string(operation) + " failed: " + cudaGetErrorString(status));
   }
@@ -93,17 +93,8 @@ namespace caspar {
   if (device_id_ < 0) {
     throw std::runtime_error("Invalid CUDA device id: " + std::to_string(device_id_));
   }
-  if (device_id_ != 0) {
-    int deviceCount;
-    cudaGetDeviceCount(&deviceCount);
-    if (deviceCount <= device_id_) {
-      throw std::runtime_error("CUDA detected " + std::to_string(deviceCount) +
-                               " devices, but device " + std::to_string(device_id_) +
-                               " was requested (0-indexed)");
-    }
-  }
-  cudaSetDevice(device_id_);
-  cudaMalloc(&origin_ptr_, allocation_size_);
+  CheckCuda(cudaSetDevice(device_id_), "cudaSetDevice");
+  CheckCuda(cudaMalloc(&origin_ptr_, allocation_size_), "cudaMalloc");
 
   size_t offset = 0;
   {% for name, field in solver.fields.items() %}
@@ -712,11 +703,11 @@ void {{solver.struct_name}}::Get{{nodetype.__name__}}NodesToStackedHost(
       num > std::numeric_limits<size_t>::max() / sizeof({{solver.storage_t}}) / kDimension) {
     throw std::runtime_error("{{nodetype.__name__}} readback exceeds mapping argument limits");
   }
-  CheckReadbackCuda(cudaSetDevice(device_id_), "cudaSetDevice");
-  CheckReadbackCuda({{nodetype.__name__}}CasparToStacked({{node_key(nodetype, "storage_current")}}, marker__scratch_inout_,
+  CheckCuda(cudaSetDevice(device_id_), "cudaSetDevice");
+  CheckCuda({{nodetype.__name__}}CasparToStacked({{node_key(nodetype, "storage_current")}}, marker__scratch_inout_,
                                           {{num_max_key(nodetype)}}, offset, num),
                     "{{nodetype.__name__}}CasparToStacked");
-  CheckReadbackCuda(cudaMemcpy(data, marker__scratch_inout_,
+  CheckCuda(cudaMemcpy(data, marker__scratch_inout_,
                                kDimension * num * sizeof({{solver.storage_t}}), cudaMemcpyDeviceToHost),
                     "cudaMemcpy device-to-host");
 }
@@ -737,8 +728,8 @@ void {{solver.struct_name}}::Get{{nodetype.__name__}}NodesToStackedDevice(
       num > std::numeric_limits<size_t>::max() / sizeof({{solver.storage_t}}) / kDimension) {
     throw std::runtime_error("{{nodetype.__name__}} readback exceeds mapping argument limits");
   }
-  CheckReadbackCuda(cudaSetDevice(device_id_), "cudaSetDevice");
-  CheckReadbackCuda({{nodetype.__name__}}CasparToStacked({{node_key(nodetype, "storage_current")}}, data,
+  CheckCuda(cudaSetDevice(device_id_), "cudaSetDevice");
+  CheckCuda({{nodetype.__name__}}CasparToStacked({{node_key(nodetype, "storage_current")}}, data,
                                           {{num_max_key(nodetype)}}, offset, num),
                     "{{nodetype.__name__}}CasparToStacked");
 }
