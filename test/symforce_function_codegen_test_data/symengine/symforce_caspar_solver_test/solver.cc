@@ -173,13 +173,14 @@ size_t GraphSolver::get_allocation_size() {
 }
 
 SolveResult GraphSolver::solve(bool print_progress, bool verbose_logging) {
-  cudaSetDevice(device_id_);
+  CheckCuda(cudaSetDevice(device_id_), "cudaSetDevice");
   SolveResult result;
   result.exit_reason = ExitReason::MAX_ITERATIONS;
   double score_best;
   double score_best_pcg;
   double diag = params_.diag_init;
-  cudaMemcpy(solver__current_diag_, &diag, sizeof(double), cudaMemcpyHostToDevice);
+  CheckCuda(cudaMemcpy(solver__current_diag_, &diag, sizeof(double), cudaMemcpyHostToDevice),
+            "cudaMemcpy host-to-device");
 
   double up_scale = params_.diag_scaling_up;
   double quality;
@@ -258,7 +259,8 @@ SolveResult GraphSolver::solve(bool print_progress, bool verbose_logging) {
       double scale =
           std::max(params_.diag_scaling_down, 1.0f - quality_tmp * quality_tmp * quality_tmp);
       diag = std::max(params_.diag_min, diag * scale);
-      cudaMemcpy(solver__current_diag_, &diag, sizeof(double), cudaMemcpyHostToDevice);
+      CheckCuda(cudaMemcpy(solver__current_diag_, &diag, sizeof(double), cudaMemcpyHostToDevice),
+                "cudaMemcpy host-to-device");
       up_scale = params_.diag_scaling_up;
       score_best = score_best_pcg;
       step_accepted = true;
@@ -271,7 +273,8 @@ SolveResult GraphSolver::solve(bool print_progress, bool verbose_logging) {
         result.exit_reason = ExitReason::CONVERGED_DIAG_EXIT;
         break;
       }
-      cudaMemcpy(solver__current_diag_, &diag, sizeof(double), cudaMemcpyHostToDevice);
+      CheckCuda(cudaMemcpy(solver__current_diag_, &diag, sizeof(double), cudaMemcpyHostToDevice),
+                "cudaMemcpy host-to-device");
       up_scale *= 2;
     }
     const auto t_now = std::chrono::steady_clock::now();
@@ -481,7 +484,6 @@ void GraphSolver::finish_indices() {
 }
 
 void GraphSolver::SetMatrix21Num(const size_t num) {
-  cudaSetDevice(device_id_);
   if (num > Matrix21_num_max_) {
     throw std::runtime_error(std::to_string(num) + " > Matrix21_num_max_");
   }
@@ -490,22 +492,33 @@ void GraphSolver::SetMatrix21Num(const size_t num) {
 
 void GraphSolver::SetMatrix21NodesFromStackedHost(const double* const data, const size_t offset,
                                                   const size_t num) {
-  cudaSetDevice(device_id_);
-  if (offset + num > Matrix21_num_) {
+  if (offset > Matrix21_num_ || num > Matrix21_num_ - offset) {
     throw std::runtime_error(std::to_string(offset + num) + " > Matrix21_num_");
   }
-  cudaMemcpy(marker__scratch_inout_, data, 2 * num * sizeof(double), cudaMemcpyHostToDevice);
-  Matrix21StackedToCaspar(marker__scratch_inout_, nodes__Matrix21__storage_current_,
-                          Matrix21_num_max_, offset, num);
+  if (num == 0) {
+    return;
+  }
+  CheckCuda(cudaSetDevice(device_id_), "cudaSetDevice");
+  CheckCuda(
+      cudaMemcpy(marker__scratch_inout_, data, 2 * num * sizeof(double), cudaMemcpyHostToDevice),
+      "cudaMemcpy host-to-device");
+  CheckCuda(Matrix21StackedToCaspar(marker__scratch_inout_, nodes__Matrix21__storage_current_,
+                                    Matrix21_num_max_, offset, num),
+            "Matrix21StackedToCaspar");
 }
 
 void GraphSolver::SetMatrix21NodesFromStackedDevice(const double* const data, const size_t offset,
                                                     const size_t num) {
-  cudaSetDevice(device_id_);
-  if (offset + num > Matrix21_num_) {
+  if (offset > Matrix21_num_ || num > Matrix21_num_ - offset) {
     throw std::runtime_error(std::to_string(offset + num) + " > Matrix21_num_");
   }
-  Matrix21StackedToCaspar(data, nodes__Matrix21__storage_current_, Matrix21_num_max_, offset, num);
+  if (num == 0) {
+    return;
+  }
+  CheckCuda(cudaSetDevice(device_id_), "cudaSetDevice");
+  CheckCuda(Matrix21StackedToCaspar(data, nodes__Matrix21__storage_current_, Matrix21_num_max_,
+                                    offset, num),
+            "Matrix21StackedToCaspar");
 }
 
 void GraphSolver::GetMatrix21NodesToStackedHost(double* const data, const size_t offset,
@@ -560,26 +573,34 @@ void GraphSolver::SetRosenbrockNum(const size_t num) {
   rosenbrock_num_ = num;
 }
 void GraphSolver::SetRosenbrockXIndicesFromHost(const unsigned int* const indices, size_t num) {
-  cudaSetDevice(device_id_);
   if (num != rosenbrock_num_) {
     throw std::runtime_error(std::to_string(num) +
                              " != rosenbrock_num_. Use SetrosenbrockNum before setting indices.");
   }
-  cudaMemcpy((unsigned int*)marker__scratch_inout_, indices, num * sizeof(unsigned int),
-             cudaMemcpyHostToDevice);
+  if (num == 0) {
+    return;
+  }
+  CheckCuda(cudaSetDevice(device_id_), "cudaSetDevice");
+  CheckCuda(cudaMemcpy((unsigned int*)marker__scratch_inout_, indices, num * sizeof(unsigned int),
+                       cudaMemcpyHostToDevice),
+            "cudaMemcpy host-to-device");
   SetRosenbrockXIndicesFromDevice((unsigned int*)marker__scratch_inout_, num);
 }
 
 void GraphSolver::SetRosenbrockXIndicesFromDevice(const unsigned int* const indices, size_t num) {
   indices_valid_ = false;
-  cudaSetDevice(device_id_);
 
   if (num != rosenbrock_num_) {
     throw std::runtime_error(std::to_string(num) +
                              " != rosenbrock_num_. Use SetrosenbrockNum before setting indices.");
   }
+  if (num == 0) {
+    return;
+  }
+  CheckCuda(cudaSetDevice(device_id_), "cudaSetDevice");
 
   SharedIndices(indices, facs__rosenbrock__args__x__idx_shared_, num);
+  CheckCuda(cudaGetLastError(), "SharedIndices");
 }
 void GraphSolver::SetCoupledRosenbrockNum(const size_t num) {
   if (num > coupled_rosenbrock_num_max_) {
@@ -589,55 +610,71 @@ void GraphSolver::SetCoupledRosenbrockNum(const size_t num) {
 }
 void GraphSolver::SetCoupledRosenbrockXIndicesFromHost(const unsigned int* const indices,
                                                        size_t num) {
-  cudaSetDevice(device_id_);
   if (num != coupled_rosenbrock_num_) {
     throw std::runtime_error(
         std::to_string(num) +
         " != coupled_rosenbrock_num_. Use Setcoupled_rosenbrockNum before setting indices.");
   }
-  cudaMemcpy((unsigned int*)marker__scratch_inout_, indices, num * sizeof(unsigned int),
-             cudaMemcpyHostToDevice);
+  if (num == 0) {
+    return;
+  }
+  CheckCuda(cudaSetDevice(device_id_), "cudaSetDevice");
+  CheckCuda(cudaMemcpy((unsigned int*)marker__scratch_inout_, indices, num * sizeof(unsigned int),
+                       cudaMemcpyHostToDevice),
+            "cudaMemcpy host-to-device");
   SetCoupledRosenbrockXIndicesFromDevice((unsigned int*)marker__scratch_inout_, num);
 }
 
 void GraphSolver::SetCoupledRosenbrockXIndicesFromDevice(const unsigned int* const indices,
                                                          size_t num) {
   indices_valid_ = false;
-  cudaSetDevice(device_id_);
 
   if (num != coupled_rosenbrock_num_) {
     throw std::runtime_error(
         std::to_string(num) +
         " != coupled_rosenbrock_num_. Use Setcoupled_rosenbrockNum before setting indices.");
   }
+  if (num == 0) {
+    return;
+  }
+  CheckCuda(cudaSetDevice(device_id_), "cudaSetDevice");
 
   SharedIndices(indices, facs__coupled_rosenbrock__args__x__idx_shared_, num);
+  CheckCuda(cudaGetLastError(), "SharedIndices");
 }
 void GraphSolver::SetCoupledRosenbrockYIndicesFromHost(const unsigned int* const indices,
                                                        size_t num) {
-  cudaSetDevice(device_id_);
   if (num != coupled_rosenbrock_num_) {
     throw std::runtime_error(
         std::to_string(num) +
         " != coupled_rosenbrock_num_. Use Setcoupled_rosenbrockNum before setting indices.");
   }
-  cudaMemcpy((unsigned int*)marker__scratch_inout_, indices, num * sizeof(unsigned int),
-             cudaMemcpyHostToDevice);
+  if (num == 0) {
+    return;
+  }
+  CheckCuda(cudaSetDevice(device_id_), "cudaSetDevice");
+  CheckCuda(cudaMemcpy((unsigned int*)marker__scratch_inout_, indices, num * sizeof(unsigned int),
+                       cudaMemcpyHostToDevice),
+            "cudaMemcpy host-to-device");
   SetCoupledRosenbrockYIndicesFromDevice((unsigned int*)marker__scratch_inout_, num);
 }
 
 void GraphSolver::SetCoupledRosenbrockYIndicesFromDevice(const unsigned int* const indices,
                                                          size_t num) {
   indices_valid_ = false;
-  cudaSetDevice(device_id_);
 
   if (num != coupled_rosenbrock_num_) {
     throw std::runtime_error(
         std::to_string(num) +
         " != coupled_rosenbrock_num_. Use Setcoupled_rosenbrockNum before setting indices.");
   }
+  if (num == 0) {
+    return;
+  }
+  CheckCuda(cudaSetDevice(device_id_), "cudaSetDevice");
 
   SharedIndices(indices, facs__coupled_rosenbrock__args__y__idx_shared_, num);
+  CheckCuda(cudaGetLastError(), "SharedIndices");
 }
 
 size_t GraphSolver::get_nbytes() {
