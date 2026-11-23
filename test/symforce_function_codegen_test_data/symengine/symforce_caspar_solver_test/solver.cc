@@ -176,6 +176,7 @@ SolveResult GraphSolver::solve(bool print_progress, bool verbose_logging) {
   CheckCuda(cudaSetDevice(device_id_), "cudaSetDevice");
   SolveResult result;
   result.exit_reason = ExitReason::MAX_ITERATIONS;
+  result.iteration_count = 0;
   double score_best;
   double score_best_pcg;
   double diag = params_.diag_init;
@@ -279,12 +280,13 @@ SolveResult GraphSolver::solve(bool print_progress, bool verbose_logging) {
       diag = diag * up_scale;
       if (diag > params_.diag_exit_value) {
         result.exit_reason = ExitReason::CONVERGED_DIAG_EXIT;
-        break;
+      } else {
+        CheckCuda(cudaMemcpy(solver__current_diag_, &diag, sizeof(double), cudaMemcpyHostToDevice),
+                  "cudaMemcpy host-to-device");
+        up_scale *= 2;
       }
-      CheckCuda(cudaMemcpy(solver__current_diag_, &diag, sizeof(double), cudaMemcpyHostToDevice),
-                "cudaMemcpy host-to-device");
-      up_scale *= 2;
     }
+    result.iteration_count = solver_iter_ + 1;
     const auto t_now = std::chrono::steady_clock::now();
     const double dt_inc = std::chrono::duration<double>(t_now - t_prev).count();
     const double dt_tot = std::chrono::duration<double>(t_now - t0).count();
@@ -315,6 +317,9 @@ SolveResult GraphSolver::solve(bool print_progress, bool verbose_logging) {
       t_prev = t_now;
       printf("\n");
     }
+    if (result.exit_reason == ExitReason::CONVERGED_DIAG_EXIT) {
+      break;
+    }
     if (score_best <= params_.score_exit_value) {
       result.exit_reason = ExitReason::CONVERGED_SCORE_THRESHOLD;
       break;
@@ -323,7 +328,6 @@ SolveResult GraphSolver::solve(bool print_progress, bool verbose_logging) {
 
   const auto t_final = std::chrono::steady_clock::now();
   result.final_score = score_best;
-  result.iteration_count = solver_iter_;
   result.runtime = std::chrono::duration<double>(t_final - t0).count();
   return result;
 }
