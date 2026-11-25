@@ -120,6 +120,16 @@ class SymforceCasparCodegenTest(TestCase):
                             if use_symlinks:
                                 self.assertEqual(generated.resolve(), runtime.resolve())
 
+                        if use_symlinks:
+                            # Switching to copy mode must produce a regular file
+                            # even if the runtime source has not changed.
+                            CasparLibrary.generate_links(
+                                output, use_symlinks=False, python_bindings=False
+                            )
+                            self.assertFalse(generated.is_symlink())
+                            self.assertEqual(generated.read_bytes(), source)
+                            self.assertEqual(runtime.read_bytes(), source)
+
     def test_runtime_shared_sum_representation(self) -> None:
         runtime = Path(caspar.__file__).parent / "source" / "runtime" / "memops.cuh"
         source = runtime.read_bytes().replace(b"\r\n", b"\n")

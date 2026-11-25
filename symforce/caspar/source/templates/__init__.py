@@ -31,5 +31,8 @@ def write_if_different(content: str, target: Path) -> None:
 
 
 def copy_if_different(other: Path, target: Path) -> None:
+    # Copy mode must own its destination even when the linked bytes match.
+    if target.is_symlink():
+        target.unlink()
     if not target.exists() or not filecmp.cmp(other, target, shallow=False):
         shutil.copy2(other, target)

@@ -14,7 +14,6 @@
 #include "caspar_mappings.h"
 #include "shared_indices.h"
 #include "solver_tools.h"
-#include "sort_indices.h"
 
 {% for fac in solver.factors%}
 #include "kernel_{{fac.name}}_res_jac.h"
@@ -45,7 +44,7 @@
 
 namespace {
 
-void CheckReadbackCuda(cudaError_t status, const char* operation) {
+void CheckCuda(cudaError_t status, const char* operation) {
   if (status != cudaSuccess) {
     throw std::runtime_error(std::string(operation) + " failed: " + cudaGetErrorString(status));
   }
@@ -94,17 +93,8 @@ namespace caspar {
   if (device_id_ < 0) {
     throw std::runtime_error("Invalid CUDA device id: " + std::to_string(device_id_));
   }
-  if (device_id_ != 0) {
-    int deviceCount;
-    cudaGetDeviceCount(&deviceCount);
-    if (deviceCount <= device_id_) {
-      throw std::runtime_error("CUDA detected " + std::to_string(deviceCount) +
-                               " devices, but device " + std::to_string(device_id_) +
-                               " was requested (0-indexed)");
-    }
-  }
-  cudaSetDevice(device_id_);
-  cudaMalloc(&origin_ptr_, allocation_size_);
+  CheckCuda(cudaSetDevice(device_id_), "cudaSetDevice");
+  CheckCuda(cudaMalloc(&origin_ptr_, allocation_size_), "cudaMalloc");
 
   size_t offset = 0;
   {% for name, field in solver.fields.items() %}
@@ -112,7 +102,6 @@ namespace caspar {
       origin_ptr_, offset, {{field.dim_real}} * {{field.num_key}}, {{field.alignment}});
   {% endfor %}
 
-  scratch_inout_size_ = offset;  // sorting, sum,
 }
 
 {{ solver.struct_name }}::~{{ solver.struct_name }}(){
@@ -139,13 +128,14 @@ size_t {{ solver.struct_name }}::get_allocation_size(){
 
 
 SolveResult {{ solver.struct_name }}::solve(bool print_progress, bool verbose_logging) {
-  cudaSetDevice(device_id_);
+  CheckCuda(cudaSetDevice(device_id_), "cudaSetDevice");
   SolveResult result;
   result.exit_reason = ExitReason::MAX_ITERATIONS;
+  result.iteration_count = 0;
   {{solver.linear_t}} score_best;
   {{solver.linear_t}} score_best_pcg;
   {{solver.linear_t}} diag = params_.diag_init;
-  cudaMemcpy({{solver_key("current_diag")}}, &diag, sizeof({{solver.linear_t}}), cudaMemcpyHostToDevice);
+  CheckCuda(cudaMemcpy({{solver_key("current_diag")}}, &diag, sizeof({{solver.linear_t}}), cudaMemcpyHostToDevice), "cudaMemcpy host-to-device");
 
   {{solver.linear_t}} up_scale = params_.diag_scaling_up;
   {{solver.linear_t}} quality;
@@ -159,7 +149,7 @@ SolveResult {{ solver.struct_name }}::solve(bool print_progress, bool verbose_lo
   }
 
   for (solver_iter_ = 0; solver_iter_ < params_.solver_iter_max; solver_iter_++) {
-    if (solver_iter_ != 0){
+    if (solver_iter_ != 0) {
       DoResJac();
     }
     score_best_pcg = score_best;
@@ -231,7 +221,7 @@ SolveResult {{ solver.struct_name }}::solve(bool print_progress, bool verbose_lo
       {{solver.linear_t}} scale =
           std::max(params_.diag_scaling_down, 1.0f - quality_tmp * quality_tmp * quality_tmp);
       diag = std::max(params_.diag_min, diag * scale);
-      cudaMemcpy({{solver_key("current_diag")}}, &diag, sizeof({{solver.linear_t}}), cudaMemcpyHostToDevice);
+      CheckCuda(cudaMemcpy({{solver_key("current_diag")}}, &diag, sizeof({{solver.linear_t}}), cudaMemcpyHostToDevice), "cudaMemcpy host-to-device");
       up_scale = params_.diag_scaling_up;
       score_best = score_best_pcg;
       step_accepted = true;
@@ -245,11 +235,12 @@ SolveResult {{ solver.struct_name }}::solve(bool print_progress, bool verbose_lo
       diag = diag * up_scale;
       if (diag > params_.diag_exit_value) {
         result.exit_reason = ExitReason::CONVERGED_DIAG_EXIT;
-        break;
+      } else {
+        CheckCuda(cudaMemcpy({{solver_key("current_diag")}}, &diag, sizeof({{solver.linear_t}}), cudaMemcpyHostToDevice), "cudaMemcpy host-to-device");
+        up_scale *= 2;
       }
-      cudaMemcpy({{solver_key("current_diag")}}, &diag, sizeof({{solver.linear_t}}), cudaMemcpyHostToDevice);
-      up_scale *= 2;
     }
+    result.iteration_count = solver_iter_ + 1;
     const auto t_now = std::chrono::steady_clock::now();
     const double dt_inc = std::chrono::duration<double>(t_now - t_prev).count();
     const double dt_tot = std::chrono::duration<double>(t_now - t0).count();
@@ -277,8 +268,11 @@ SolveResult {{ solver.struct_name }}::solve(bool print_progress, bool verbose_lo
       printf("diag: % 6.3e  ", diag_current);
       printf("dt_inc: % 10.6f  ", dt_inc);
       printf("dt_tot: % 10.6f  ", dt_tot);
-      t_prev = t_now;
       printf("\n");
+    }
+    t_prev = t_now;
+    if (result.exit_reason == ExitReason::CONVERGED_DIAG_EXIT) {
+      break;
     }
     if (score_best <= params_.score_exit_value) {
       result.exit_reason = ExitReason::CONVERGED_SCORE_THRESHOLD;
@@ -288,7 +282,6 @@ SolveResult {{ solver.struct_name }}::solve(bool print_progress, bool verbose_lo
 
   const auto t_final = std::chrono::steady_clock::now();
   result.final_score = score_best;
-  result.iteration_count = solver_iter_;
   result.runtime = std::chrono::duration<double>(t_final - t0).count();
   return result;
 }
@@ -668,7 +661,6 @@ void {{ solver.struct_name }}::finish_indices() {
 
 {% for nodetype in solver.node_types %}
 void {{ solver.struct_name }}::Set{{nodetype.__name__}}Num(const size_t num) {
-    cudaSetDevice(device_id_);
     if (num > {{num_max_key(nodetype)}}) {
         throw std::runtime_error(std::to_string(num) + " > {{num_max_key(nodetype)}}");
     }
@@ -677,25 +669,31 @@ void {{ solver.struct_name }}::Set{{nodetype.__name__}}Num(const size_t num) {
 
 void {{ solver.struct_name }}::Set{{nodetype.__name__}}NodesFromStackedHost(
     const {{solver.storage_t}}* const data, const size_t offset, const size_t num) {
-  cudaSetDevice(device_id_);
-  if (offset + num > {{num_key(nodetype)}}){
+  if (offset > {{num_key(nodetype)}} || num > {{num_key(nodetype)}} - offset) {
     throw std::runtime_error(std::to_string(offset + num) + " > {{num_key(nodetype)}}");
   }
-  cudaMemcpy(marker__scratch_inout_, data, {{Ops.storage_dim(nodetype)}} * num * sizeof({{solver.storage_t}}),
-             cudaMemcpyHostToDevice);
-  {{nodetype.__name__}}StackedToCaspar(marker__scratch_inout_,
+  if (num == 0) {
+    return;
+  }
+  CheckCuda(cudaSetDevice(device_id_), "cudaSetDevice");
+  CheckCuda(cudaMemcpy(marker__scratch_inout_, data, {{Ops.storage_dim(nodetype)}} * num * sizeof({{solver.storage_t}}),
+             cudaMemcpyHostToDevice), "cudaMemcpy host-to-device");
+  CheckCuda({{nodetype.__name__}}StackedToCaspar(marker__scratch_inout_,
                                           {{node_key(nodetype, "storage_current")}},
-                                          {{num_max_key(nodetype)}}, offset, num);
+                                          {{num_max_key(nodetype)}}, offset, num), "{{nodetype.__name__}}StackedToCaspar");
 }
 
 void {{ solver.struct_name }}::Set{{nodetype.__name__}}NodesFromStackedDevice(
     const {{solver.storage_t}}* const data, const size_t offset, const size_t num) {
-  cudaSetDevice(device_id_);
-  if (offset + num > {{num_key(nodetype)}}){
+  if (offset > {{num_key(nodetype)}} || num > {{num_key(nodetype)}} - offset) {
     throw std::runtime_error(std::to_string(offset + num) + " > {{num_key(nodetype)}}");
   }
-  {{nodetype.__name__}}StackedToCaspar(
-      data, {{node_key(nodetype, "storage_current")}}, {{num_max_key(nodetype)}}, offset, num);
+  if (num == 0) {
+    return;
+  }
+  CheckCuda(cudaSetDevice(device_id_), "cudaSetDevice");
+  CheckCuda({{nodetype.__name__}}StackedToCaspar(
+      data, {{node_key(nodetype, "storage_current")}}, {{num_max_key(nodetype)}}, offset, num), "{{nodetype.__name__}}StackedToCaspar");
 }
 
 void {{solver.struct_name}}::Get{{nodetype.__name__}}NodesToStackedHost(
@@ -714,11 +712,11 @@ void {{solver.struct_name}}::Get{{nodetype.__name__}}NodesToStackedHost(
       num > std::numeric_limits<size_t>::max() / sizeof({{solver.storage_t}}) / kDimension) {
     throw std::runtime_error("{{nodetype.__name__}} readback exceeds mapping argument limits");
   }
-  CheckReadbackCuda(cudaSetDevice(device_id_), "cudaSetDevice");
-  CheckReadbackCuda({{nodetype.__name__}}CasparToStacked({{node_key(nodetype, "storage_current")}}, marker__scratch_inout_,
+  CheckCuda(cudaSetDevice(device_id_), "cudaSetDevice");
+  CheckCuda({{nodetype.__name__}}CasparToStacked({{node_key(nodetype, "storage_current")}}, marker__scratch_inout_,
                                           {{num_max_key(nodetype)}}, offset, num),
                     "{{nodetype.__name__}}CasparToStacked");
-  CheckReadbackCuda(cudaMemcpy(data, marker__scratch_inout_,
+  CheckCuda(cudaMemcpy(data, marker__scratch_inout_,
                                kDimension * num * sizeof({{solver.storage_t}}), cudaMemcpyDeviceToHost),
                     "cudaMemcpy device-to-host");
 }
@@ -739,8 +737,8 @@ void {{solver.struct_name}}::Get{{nodetype.__name__}}NodesToStackedDevice(
       num > std::numeric_limits<size_t>::max() / sizeof({{solver.storage_t}}) / kDimension) {
     throw std::runtime_error("{{nodetype.__name__}} readback exceeds mapping argument limits");
   }
-  CheckReadbackCuda(cudaSetDevice(device_id_), "cudaSetDevice");
-  CheckReadbackCuda({{nodetype.__name__}}CasparToStacked({{node_key(nodetype, "storage_current")}}, data,
+  CheckCuda(cudaSetDevice(device_id_), "cudaSetDevice");
+  CheckCuda({{nodetype.__name__}}CasparToStacked({{node_key(nodetype, "storage_current")}}, data,
                                           {{num_max_key(nodetype)}}, offset, num),
                     "{{nodetype.__name__}}CasparToStacked");
 }
@@ -758,35 +756,36 @@ void {{solver.struct_name}}::Get{{nodetype.__name__}}NodesToStackedDevice(
     {% if fac.isnodeshared[arg] %}
       void {{ solver.struct_name }}::Set{{parts_to_pascal(fac.name)}}{{parts_to_pascal(arg)}}IndicesFromHost(
           const unsigned int* const indices, size_t num) {
-        cudaSetDevice(device_id_);
         if (num != {{num_key(fac)}}){
           throw std::runtime_error(
               std::to_string(num)
               + " != {{num_key(fac)}}. Use Set{{fac.name }}Num before setting indices.");
         }
-        cudaMemcpy((unsigned int*)marker__scratch_inout_, indices, num * sizeof(unsigned int),
-                  cudaMemcpyHostToDevice);
+        if (num == 0) {
+          return;
+        }
+        CheckCuda(cudaSetDevice(device_id_), "cudaSetDevice");
+        CheckCuda(cudaMemcpy((unsigned int*)marker__scratch_inout_, indices, num * sizeof(unsigned int),
+                  cudaMemcpyHostToDevice), "cudaMemcpy host-to-device");
         Set{{parts_to_pascal(fac.name)}}{{parts_to_pascal(arg)}}IndicesFromDevice((unsigned int*)marker__scratch_inout_, num);
       }
 
       void {{ solver.struct_name }}::Set{{parts_to_pascal(fac.name)}}{{parts_to_pascal(arg)}}IndicesFromDevice(
           const unsigned int* const indices, size_t num) {
         indices_valid_ = false;
-        cudaSetDevice(device_id_);
         
         if (num != {{num_key(fac)}}){
           throw std::runtime_error(
               std::to_string(num)
               + " != {{num_key(fac)}}. Use Set{{fac.name }}Num before setting indices.");
         }
-
-        size_t tmp_size = SortIndicesGetTmpNbytes(num);
-        if (tmp_size + num > scratch_inout_size_) {
-            throw std::runtime_error("Scratch_inout_size too small. tmp_size: " + std::to_string(tmp_size) +
-                                    ", num: " + std::to_string(num) +
-                                    ", scratch_inout_size_: " + std::to_string(scratch_inout_size_));
+        if (num == 0) {
+          return;
         }
+        CheckCuda(cudaSetDevice(device_id_), "cudaSetDevice");
+
         SharedIndices(indices, {{arg_key(fac, arg, "idx_shared")}}, num);
+        CheckCuda(cudaGetLastError(), "SharedIndices");
       }
     {% endif %}
   {% endfor %}
@@ -802,17 +801,20 @@ void {{solver.struct_name}}::Get{{nodetype.__name__}}NodesToStackedDevice(
           const {{solver.storage_t}}* const data, size_t offset, size_t num
           {% endif %}
           ) {
-      cudaSetDevice(device_id_);
       {% if fac.isconstuniq[arg] %}
       const size_t offset = 0;
       const size_t num = 1;
       {% endif %}
-      if (offset + num > {{num_max_key(fac)}}) {
+      if (offset > {{num_max_key(fac)}} || num > {{num_max_key(fac)}} - offset) {
           throw std::runtime_error(std::to_string(offset + num) + " > {{num_max_key(fac)}}");
       }
-      cudaMemcpy(marker__scratch_inout_, data, {{Ops.storage_dim(argtype)}} * num * sizeof({{solver.storage_t}}),
-                cudaMemcpyHostToDevice);
-      {{argtype.__name__}}StackedToCaspar(marker__scratch_inout_, {{arg_key(fac, arg, "data")}},
+      if (num == 0) {
+        return;
+      }
+      CheckCuda(cudaSetDevice(device_id_), "cudaSetDevice");
+      CheckCuda(cudaMemcpy(marker__scratch_inout_, data, {{Ops.storage_dim(argtype)}} * num * sizeof({{solver.storage_t}}),
+                cudaMemcpyHostToDevice), "cudaMemcpy host-to-device");
+      CheckCuda({{argtype.__name__}}StackedToCaspar(marker__scratch_inout_, {{arg_key(fac, arg, "data")}},
                                             {% if fac.isconstseq[arg] %}
                                             {{num_max_key(fac)}},
                                             {% elif fac.isconstuniq[arg] %}
@@ -822,7 +824,7 @@ void {{solver.struct_name}}::Get{{nodetype.__name__}}NodesToStackedDevice(
                                             {% elif fac.isconstindexed[arg] %}
                                             {{num_max_key(fac)}},
                                             {% endif %}
-                                            offset, num);
+                                            offset, num), "{{argtype.__name__}}StackedToCaspar");
     }
 
     void {{ solver.struct_name }}::Set{{parts_to_pascal(fac.name)}}{{parts_to_pascal(arg)}}DataFromStackedDevice(
@@ -835,15 +837,18 @@ void {{solver.struct_name}}::Get{{nodetype.__name__}}NodesToStackedDevice(
           {% elif fac.isconstindexed[arg] %}
             const {{solver.storage_t}}* const data, size_t offset, size_t num
           {% endif %}        ) {
-      cudaSetDevice(device_id_);
       {% if fac.isconstuniq[arg] %}
       const size_t offset = 0;
       const size_t num = 1;
       {% endif %}
-      if (offset + num > {{num_max_key(fac)}}){
+      if (offset > {{num_max_key(fac)}} || num > {{num_max_key(fac)}} - offset) {
         throw std::runtime_error(std::to_string(offset + num) + " > {{num_max_key(fac)}}");
       }
-      {{argtype.__name__}}StackedToCaspar(data, {{arg_key(fac, arg, "data")}},
+      if (num == 0) {
+        return;
+      }
+      CheckCuda(cudaSetDevice(device_id_), "cudaSetDevice");
+      CheckCuda({{argtype.__name__}}StackedToCaspar(data, {{arg_key(fac, arg, "data")}},
                                             {% if fac.isconstseq[arg] %}
                                             {{num_max_key(fac)}},
                                             {% elif fac.isconstuniq[arg] %}
@@ -853,66 +858,73 @@ void {{solver.struct_name}}::Get{{nodetype.__name__}}NodesToStackedDevice(
                                             {% elif fac.isconstindexed[arg] %}
                                             {{num_max_key(fac)}},
                                             {% endif %}
-                                            offset, num);
+                                            offset, num), "{{argtype.__name__}}StackedToCaspar");
     }
     {% if fac.isconstshared[arg] %}
       void {{ solver.struct_name }}::Set{{parts_to_pascal(fac.name)}}{{parts_to_pascal(arg)}}IndicesFromHost(
             const unsigned int* const indices, size_t num) {
-          cudaSetDevice(device_id_);
           if (num != {{num_key(fac)}}){
             throw std::runtime_error(
                 std::to_string(num)
                 + " != {{num_key(fac)}}. Use Set{{fac.name }}Num before setting indices.");
           }
-          cudaMemcpy((unsigned int*)marker__scratch_inout_, indices, num * sizeof(unsigned int),
-                    cudaMemcpyHostToDevice);
+          if (num == 0) {
+            return;
+          }
+          CheckCuda(cudaSetDevice(device_id_), "cudaSetDevice");
+          CheckCuda(cudaMemcpy((unsigned int*)marker__scratch_inout_, indices, num * sizeof(unsigned int),
+                    cudaMemcpyHostToDevice), "cudaMemcpy host-to-device");
           Set{{parts_to_pascal(fac.name)}}{{parts_to_pascal(arg)}}IndicesFromDevice((unsigned int*)marker__scratch_inout_, num);
         }
 
         void {{ solver.struct_name }}::Set{{parts_to_pascal(fac.name)}}{{parts_to_pascal(arg)}}IndicesFromDevice(
             const unsigned int* const indices, size_t num) {
           indices_valid_ = false;
-          cudaSetDevice(device_id_);
           if (num != {{num_key(fac)}}){
             throw std::runtime_error(
                 std::to_string(num)
                 + " != {{num_key(fac)}}. Use Set{{fac.name }}Num before setting indices.");
           }
-
-          size_t tmp_size = SortIndicesGetTmpNbytes(num);
-          if (tmp_size + num > scratch_inout_size_) {
-              throw std::runtime_error("Scratch_inout_size too small. tmp_size: " + std::to_string(tmp_size) +
-                                      ", num: " + std::to_string(num) +
-                                      ", scratch_inout_size_: " + std::to_string(scratch_inout_size_));
+          if (num == 0) {
+            return;
           }
+          CheckCuda(cudaSetDevice(device_id_), "cudaSetDevice");
+
           SharedIndices(indices, {{arg_key(fac, arg, "idx_shared")}}, num);
+          CheckCuda(cudaGetLastError(), "SharedIndices");
 
         }
     {% elif fac.isconstindexed[arg] %}
       void {{ solver.struct_name }}::Set{{parts_to_pascal(fac.name)}}{{parts_to_pascal(arg)}}IndicesFromHost(
             const unsigned int* const indices, size_t num) {
           indices_valid_ = false;
-          cudaSetDevice(device_id_);
           if (num != {{num_key(fac)}}){
             throw std::runtime_error(
                 std::to_string(num)
                 + " != {{num_key(fac)}}. Use Set{{fac.name }}Num before setting indices.");
           }
-          cudaMemcpy({{arg_key(fac, arg, "idx")}}, indices, num * sizeof(unsigned int),
-                    cudaMemcpyHostToDevice);
+          if (num == 0) {
+            return;
+          }
+          CheckCuda(cudaSetDevice(device_id_), "cudaSetDevice");
+          CheckCuda(cudaMemcpy({{arg_key(fac, arg, "idx")}}, indices, num * sizeof(unsigned int),
+                    cudaMemcpyHostToDevice), "cudaMemcpy host-to-device");
         }
 
         void {{ solver.struct_name }}::Set{{parts_to_pascal(fac.name)}}{{parts_to_pascal(arg)}}IndicesFromDevice(
             const unsigned int* const indices, size_t num) {
           indices_valid_ = false;
-          cudaSetDevice(device_id_);
           if (num != {{num_key(fac)}}){
             throw std::runtime_error(
                 std::to_string(num)
                 + " != {{num_key(fac)}}. Use Set{{fac.name }}Num before setting indices.");
           }
-          cudaMemcpy({{arg_key(fac, arg, "idx")}}, indices, num * sizeof(unsigned int),
-                    cudaMemcpyDeviceToDevice);
+          if (num == 0) {
+            return;
+          }
+          CheckCuda(cudaSetDevice(device_id_), "cudaSetDevice");
+          CheckCuda(cudaMemcpy({{arg_key(fac, arg, "idx")}}, indices, num * sizeof(unsigned int),
+                    cudaMemcpyDeviceToDevice), "cudaMemcpy device-to-device");
         }
 
     {% endif%}
